@@ -1,0 +1,28 @@
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: ExternalSecret
+metadata:
+  name: github-ssh-access
+  namespace: workflows
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: github-ssh-access
+    template:
+      data:
+        username: >- 
+          {{ printf "{{ .username | toString }}" }}
+        privateKey: >-
+          {{ printf "{{ .privateKey | toString }}" }}
+  data:
+    - secretKey: username
+      remoteRef:
+        key: github-credentials
+        property: github-ssh-access-username
+    - secretKey: privateKey
+      remoteRef:
+        key: github-credentials
+        property: github-ssh-access-private-key

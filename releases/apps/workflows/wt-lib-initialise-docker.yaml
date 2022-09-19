@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-lib-initialise-docker
+  namespace: workflows
+spec:
+  templates:
+    - name: initialise
+      inputs:
+        parameters:
+          - name: APP_REPO
+          - name: APP_REVISION
+          - name: STAGING_REGISTRY
+        artifacts:
+          - name: source
+            path: /workspace/src
+            git:
+              repo: "{{inputs.parameters.APP_REPO}}"
+              revision: "{{inputs.parameters.APP_REVISION}}"
+              usernameSecret:
+                name: github-ssh-access
+                key: username
+              sshPrivateKeySecret:
+                name: github-ssh-access
+                key: privateKey
+              insecureIgnoreHostKey: true
+      container:
+        imagePullPolicy: Always
+        image: gcr.io/kaniko-project/executor:v1.7.0-debug
+        command: [sh, -c]
+        args: ["/kaniko/executor --dockerfile=Dockerfile --context `pwd` --destination={{inputs.parameters.STAGING_REGISTRY}}"]
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: docker-registry
+            mountPath: "/kaniko/.docker/"
+            optional: false
+            secretName: "docker-registry-credentials"
+        resources:
+          requests:
+            memory: "1000Mi"
+            cpu: "1000m"

@@ -1,0 +1,28 @@
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: ExternalSecret
+metadata:
+  name: github-pat-access
+  namespace: workflows
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: github-pat-access
+    template:
+      data:
+        username: >- 
+          {{ printf "{{ .username | toString }}" }}
+        privateKey: >-
+          {{ printf "{{ .password | toString }}" }}
+  data:
+    - secretKey: username
+      remoteRef:
+        key: github-credentials
+        property: github-personal-access-username
+    - secretKey: password
+      remoteRef:
+        key: github-credentials
+        property: github-personal-access-token

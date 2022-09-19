@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-lib-initialise-python
+  namespace: workflows
+spec:
+  templates:
+    - name: initialise
+      inputs:
+        parameters:
+          - name: APP_REPO
+          - name: APP_REVISION
+        artifacts:
+          - name: source
+            path: /workspace/src
+            git:
+              repo: "{{inputs.parameters.APP_REPO}}"
+              revision: "{{inputs.parameters.APP_REVISION}}"
+              usernameSecret:
+                name: github-ssh-access
+                key: username
+              sshPrivateKeySecret:
+                name: github-ssh-access
+                key: privateKey
+              insecureIgnoreHostKey: true
+      container:
+        imagePullPolicy: Always
+        image: python:3.9.10-slim-bullseye
+        command: [sh, -c]
+        args: ["cd /workspace/src"]
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: "1000Mi"
+            cpu: "1000m"

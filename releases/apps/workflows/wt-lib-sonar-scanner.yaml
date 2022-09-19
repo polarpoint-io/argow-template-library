@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-lib-sonar-scanner
+  namespace: workflows
+spec:
+  templates:
+    - name: code-analysis
+      inputs:
+        parameters:
+          - name: APP_PATH
+      script:
+        imagePullPolicy: Always
+        image: sonarsource/sonar-scanner-cli:4.6
+        command: [sh, -c]
+        args: ["sleep infinity"]
+        workingDir: "/workspace/src/{{inputs.parameters.APP_PATH}}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace

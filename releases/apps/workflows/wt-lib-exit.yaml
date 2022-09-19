@@ -1,0 +1,35 @@
+# Exit handler templates
+
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-lib-exit
+  namespace: workflows
+spec:
+  templates:
+    - name: exit-handler
+      steps:
+        - - name: notify
+            template: send-notification
+          - name: success
+            template: success
+            when: "{{workflow.status}} == Succeeded"
+          - name: failure
+            template: failure
+            when: "{{workflow.status}} != Succeeded"
+    - name: send-notification
+      container:
+        image: alpine:3.15.0
+        command: [sh, -c]
+        args: ["echo send e-mail: {{workflow.name}} {{workflow.status}}"]
+    - name: success
+      container:
+        image: alpine:3.15.0
+        command: [sh, -c]
+        args: ["echo hooray!"]
+    - name: failure
+      container:
+        image: alpine:3.15.0
+        command: [sh, -c]
+        args: ["echo boohoo!"]
+

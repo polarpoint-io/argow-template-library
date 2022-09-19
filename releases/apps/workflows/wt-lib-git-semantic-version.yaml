@@ -1,0 +1,33 @@
+# Semantic version template
+
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-lib-git-semantic-version
+  namespace: workflows
+spec:
+  templates:
+    - name: git-semantic-version
+      script:
+        imagePullPolicy: Always
+        image: polarpoint/node-client:0.16.13
+        command: [sh, -c]
+        args: [
+            "
+            git config --global user.name 'argo-workflows' &&
+            git config --global user.email $GIT_AUTHOR_EMAIL &&
+            npm version patch --force &&
+            echo 'semantic version'
+            ",
+          ]
+        env:
+          - name: GIT_AUTHOR_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: github-credentials
+                key: username
+        workingDir: "/workspace/src/{{inputs.parameters.APP_PATH}}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+

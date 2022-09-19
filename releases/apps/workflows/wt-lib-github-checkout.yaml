@@ -1,0 +1,66 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-lib-github-checkout
+  namespace: workflows
+spec:
+  templates:
+    - name: github-checkout-ssh
+      inputs:
+        parameters:
+          - name: APP_REPO
+          - name: APP_REVISION
+        artifacts:
+          - name: source
+            path: /workspace/src
+            git:
+              repo: "{{inputs.parameters.APP_REPO}}"
+              revision: "{{inputs.parameters.APP_REVISION}}"
+              usernameSecret:
+                name: github-ssh-access
+                key: username
+              sshPrivateKeySecret:
+                name: github-ssh-access
+                key: privateKey
+              insecureIgnoreHostKey: true
+      container:
+        imagePullPolicy: Always
+        image: alpine/git:v2.32.0
+        command: [sh, -c]
+        args: ["cd /workspace/src"]
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: "2000Mi"
+            cpu: "1000m"
+    - name: github-checkout-pat
+      inputs:
+        parameters:
+          - name: APP_REPO
+          - name: APP_REVISION
+        artifacts:
+          - name: source
+            path: /workspace/src
+            git:
+              repo: "{{inputs.parameters.APP_REPO}}"
+              revision: "{{inputs.parameters.APP_REVISION}}"
+              usernameSecret:
+                name: github-pat-access
+                key: username
+              sshPrivateKeySecret:
+                name: github-pat-access
+                key: password
+      container:
+        imagePullPolicy: Always
+        image: alpine/git:v2.32.0
+        command: [sh, -c]
+        args: ["cd /workspace/src"]
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+        resources:
+          requests:
+            memory: "2000Mi"
+            cpu: "1000m"
