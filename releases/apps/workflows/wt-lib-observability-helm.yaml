@@ -47,7 +47,7 @@ spec:
               git add /alerts/src/Chart.yaml &&
               git status &&
               git commit -m 'feat: argo-workflows add alerts' &&
-              git push https://${GITLAB_USER}:${GITLAB_PASSWORD}@`echo {{ printf " {{inputs.parameters.HELM_CHART_REPO}} "}} | cut -c 9-255`  --follow-tags &&
+              git push https://${GITLAB_USER}:${GITLAB_PASSWORD}@`echo  {{inputs.parameters.HELM_CHART_REPO}} }} | cut -c 9-255`  --follow-tags &&
               echo 'git push completed'"]
       env:
       - name: GITLAB_USER
@@ -132,8 +132,8 @@ spec:
       - name: argocd-alerts
         path: /workspace/argocd/applications
         git:
-          repo: {{ printf " {{inputs.parameters.ARGOCD_MONITORING_APPLICATIONS}}" }}
-          revision: {{ printf "{{inputs.parameters.ARGOCD_MONITORING_APP_REVISION}}" }}
+          repo:  {{inputs.parameters.ARGOCD_MONITORING_APPLICATIONS}}
+          revision: {{inputs.parameters.ARGOCD_MONITORING_APP_REVISION}}
           usernameSecret:
             name: git-gitlab-access
             key: username
@@ -145,8 +145,8 @@ spec:
       imagePullPolicy: Always
       command: [sh, -c]
       args: ["
-              cd /workspace/argocd/applications/{{ printf "{{ inputs.parameters.ARGOCD_MONITORING_APP_PATH}}" }} &&
-              yq write -i values.yaml {{ printf " {{inputs.parameters.ARGOCD_MONITORING_APP_YAML_PATH }} {{inputs.parameters.HELM_VERSION}}" }} &&
+              cd /workspace/argocd/applications/{{ inputs.parameters.ARGOCD_MONITORING_APP_PATH}} &&
+              yq write -i values.yaml  {{inputs.parameters.ARGOCD_MONITORING_APP_YAML_PATH }} {{inputs.parameters.HELM_VERSION}} &&
               cat values.yaml 
               "]
       volumeMounts:
@@ -164,11 +164,11 @@ spec:
       command: [sh, -c]
       args: ["
         mkdir -p ~/.ssh/ &&  
-        cd /workspace/argocd/applications/{{ printf "{{ inputs.parameters.ARGOCD_MONITORING_APP_PATH}}" }} &&
+        cd /workspace/argocd/applications/{{ inputs.parameters.ARGOCD_MONITORING_APP_PATH}} &&
         ls -rtl &&  
             git status &&
             git add values.yaml &&       
-            git commit -m 'feat: {{ printf "{{ inputs.parameters.HELM_VERSION}}" }} argo workflows' &&             
+            git commit -m 'feat: {{ inputs.parameters.HELM_VERSION}} argo workflows' &&             
             git push https://${GITLAB_USER}:${GITLAB_PASS}@${HELM_CHART_REPO}  --follow-tags &&
         echo 'git push done'
       "]
