@@ -132,8 +132,8 @@ spec:
       - name: argocd-alerts
         path: /workspace/argocd/applications
         git:
-          repo:  {{inputs.parameters.ARGOCD_MONITORING_APPLICATIONS}}
-          revision: {{inputs.parameters.ARGOCD_MONITORING_APP_REVISION}}
+          repo:  "{{inputs.parameters.ARGOCD_MONITORING_APPLICATIONS}}"
+          revision: "{{inputs.parameters.ARGOCD_MONITORING_APP_REVISION}}"
           usernameSecret:
             name: git-gitlab-access
             key: username
