@@ -43,8 +43,8 @@ spec:
       - name: source
         path: /alerts/src
         git:
-          repo:  {{inputs.parameters.HELM_CHART_REPO }}
-          revision:  {{inputs.parameters.HELM_CHART_REVISION }}
+          repo:  "{{inputs.parameters.HELM_CHART_REPO}}"
+          revision:  "{{inputs.parameters.HELM_CHART_REVISION}}"
           usernameSecret:
             name: git-gitlab-access
             key: username
