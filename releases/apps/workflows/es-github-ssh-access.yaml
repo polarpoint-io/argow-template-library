@@ -14,9 +14,9 @@ spec:
     template:
       data:
         username: >- 
-          {{ printf "{{ .username | toString }}" }}
+          {{ .username | toString }}
         privateKey: >-
-          {{ printf "{{ .privateKey | toString }}" }}
+          {{ .privateKey | toString  }}
   data:
     - secretKey: username
       remoteRef:
@@ -26,3 +26,12 @@ spec:
       remoteRef:
         key: github-credentials
         property: github-ssh-access-private-key
+    - secretKey: AUTH_GITHUB_CLIENT_ID
+      remoteRef:
+        key: github-client-id
+    - secretKey: AUTH_GITHUB_CLIENT_SECRET
+      remoteRef:
+        key: github-client-secret
+    - secretKey: GITHUB_TOKEN
+      remoteRef:
+        key: github-token
