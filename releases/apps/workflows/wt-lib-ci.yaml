@@ -1,0 +1,435 @@
+#    export DOCKER_USERNAME=******
+#    export DOCKER_TOKEN=******
+#    kubectl -n workflows create secret generic docker-config --from-literal="config.json={\"auths\": {\"https://index.docker.io/v1/\": {\"auth\": \"$(echo -n $DOCKER_USERNAME:$DOCKER_TOKEN|base64)\"}}}"
+
+
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wft-complete-ci
+spec:
+  arguments:
+    parameters:
+      - name: repo
+        value: git@github.com:polarpoint-io/backstage.git
+      - name: branch
+        value: main
+      - name: path
+        value: app
+      - name: stagingImageLine
+        value: polarpoint
+      - name: imageLine
+        value: polarpoint
+      - name: sonarqube_url
+        value: https://code-analysis.polarpoint.io
+      - name: sonarqube_project_key
+        value: backstage 
+  entrypoint: main
+  onExit: exit-handler 
+  serviceAccountName: argo-workflow
+# store private key in volume for git
+  volumes:
+    - name: github
+      secret:
+        secretName: github-ssh-access
+  # We use a volume claim template so that we can have a shared workspace.
+  volumeClaimTemplates:
+    - metadata:
+        name: work
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 5Gi
+
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: clone
+            template: github-checkout
+            arguments:
+              parameters:
+                - name: repo
+                  value: "{{workflow.parameters.repo}}"
+                - name: branch
+                  value: "{{workflow.parameters.branch}}"
+          - name: test
+            template: test
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+            depends: "clone"
+          - name: lint
+            template: lint
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+            depends: "clone"
+          - name: code-analysis
+            template: code-analysis
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+            depends: "clone"
+          - name: build
+            template: build
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+            # depends: "clone"
+            depends: "test && lint && code-analysis"
+          - name: version
+            template: git-semantic-version
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+            depends: "build"
+          - name: staging-image
+            template: build-staging-image
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+                - name: stagingImageLine
+                  value: "{{workflow.parameters.stagingImageLine}}"
+            depends: "version"
+          - name: scan
+            template: grype-container-scan
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+                - name: stagingImageLine
+                  value: "{{workflow.parameters.stagingImageLine}}"
+            depends: "staging-image"
+          - name: prepare-image
+            template: prepare-image
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+                - name: imageLine
+                  value: "{{workflow.parameters.imageLine}}"
+                - name: stagingImageLine
+                  value: "{{workflow.parameters.stagingImageLine}}"
+            depends: "scan"
+          - name: publish-image
+            template: publish-image
+            arguments:
+              parameters:
+                - name: path
+                  value: "{{workflow.parameters.path}}"
+                - name: imageLine
+                  value: "{{workflow.parameters.imageLine}}"
+                - name: stagingImageLine
+                  value: "{{workflow.parameters.stagingImageLine}}"
+            depends: "prepare-image"
+
+    - name: github-checkout
+      inputs:
+        parameters:
+          - name: repo
+          - name: branch
+        artifacts:
+          - name: source
+            path: /work/source
+            git:
+              repo: "{{inputs.parameters.repo}}"
+              revision: "{{inputs.parameters.branch}}"
+              sshPrivateKeySecret:
+                name: github-ssh-access
+                key: github-ssh
+      container:
+        imagePullPolicy: Always
+        image: alpine/git:v2.32.0
+        command: [sh, -c]
+        args: ["cd /work"]
+        volumeMounts:
+          - mountPath: /work
+            name: work
+        resources:
+          requests:
+            memory: "2000Mi"
+            cpu: "1000m"
+
+    - name: build
+      inputs:
+        parameters:
+          - name: path
+      container:
+        image: ubuntu:20.04
+        volumeMounts:
+          - mountPath: /work
+            name: work
+        workingDir: /work/source/{{inputs.parameters.path}}
+        command: [sh, -c]
+        args: ["ls -rtl &&
+              echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections &&
+              env DEBIAN_FRONTEND=noninteractive  &&
+              apt-get update && apt-get -y install python3 cmake g++ curl git tzdata &&
+               curl -sL https://deb.nodesource.com/setup_16.x | bash - && 
+               apt-get -y install nodejs &&
+               npm install --global yarn &&
+               cd /work/source/{{inputs.parameters.path}} && 
+               yarn add --network-timeout 1200000 --cwd packages/app @backstage/plugin-kubernetes @backstage/plugin-search @backstage/plugin-search-react @backstage/plugin-catalog &&
+               yarn install --frozen-lockfile --network-timeout 1200000 &&
+               yarn tsc &&
+               yarn build 
+              "]
+    - name: build-staging-image
+      inputs:
+        parameters:
+          - name: stagingImageLine
+            value: "{{workflow.parameters.stagingImageLine}}"
+          - name: path
+            value: "{{workflow.parameters.path}}"
+      script:
+        image: gcr.io/kaniko-project/executor:v1.7.0-debug
+        workingDir: /work/source/{{inputs.parameters.path}}
+        command: [sh, -c]
+        args: ["cd /work/source/ && ls -la &&
+              echo '{{inputs.parameters.stagingImageLine}}/{{workflow.outputs.parameters.imageName}}:{{workflow.outputs.parameters.imageVersion}}' &&
+              /kaniko/executor --dockerfile=Dockerfile --context `pwd` --destination='{{inputs.parameters.stagingImageLine}}/{{workflow.outputs.parameters.imageName}}:{{workflow.outputs.parameters.imageVersion}}' 
+              "]
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: docker-config
+            mountPath: "/kaniko/.docker/"
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: docker-config
+
+    - name: grype-container-scan
+      inputs:
+        parameters:
+          - name: stagingImageLine
+            value: "{{workflow.parameters.stagingImageLine}}"
+      script:
+        image: polarpoint/grype-client:0.1.0
+        workingDir: /
+        command: [ sh, -c ]
+        args: [ "
+                 echo '{{inputs.parameters.stagingImageLine}}/{{workflow.outputs.parameters.imageName}}:{{workflow.outputs.parameters.imageVersion}}' &&
+                 grype '{{inputs.parameters.stagingImageLine}}/{{workflow.outputs.parameters.imageName}}:{{workflow.outputs.parameters.imageVersion}}' --fail-on critical --only-fixed --add-cpes-if-none
+                " ]
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: docker-config
+            mountPath: "/kaniko/.docker/"
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: docker-config
+
+    - name: prepare-image
+      inputs:
+        parameters:
+          - name: stagingImageLine
+            value: "{{workflow.parameters.stagingImageLine}}"
+          - name: imageLine
+            value: "{{workflow.parameters.imageLine}}"
+          - name: path
+            value: "{{workflow.parameters.path}}"
+      script:
+        image: gcr.io/go-containerregistry/crane:debug
+        workingDir: /work/source/{{inputs.parameters.path}}
+        command: [sh, -c]
+        args: ["cd /work/source/ && ls -la &&
+              crane pull --verbose 'polarpoint/{{workflow.outputs.parameters.imageName}}:{{workflow.outputs.parameters.imageVersion}}' temptar.tar
+              "]
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: docker-config
+            mountPath: "/kaniko/.docker/"
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: docker-config
+
+    - name: publish-image
+      inputs:
+        parameters:
+          - name: stagingImageLine
+            value: "{{workflow.parameters.stagingImageLine}}"
+          - name: imageLine
+            value: "{{workflow.parameters.imageLine}}"
+          - name: path
+            value: "{{workflow.parameters.path}}"
+      script:
+        image: gcr.io/go-containerregistry/crane:debug
+        workingDir: /work/source/{{inputs.parameters.path}}
+        command: [sh, -c]
+        args: ["cd /work/source/ && ls -la &&
+              crane push --verbose temptar.tar polarpoint/{{workflow.outputs.parameters.imageName}}:{{workflow.outputs.parameters.imageVersion}}
+              "]
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: docker-config
+            mountPath: "/root/.docker/"
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: docker-config
+
+    - name: test
+      inputs:
+        parameters:
+          - name: path
+            value: "{{workflow.parameters.path}}"
+      script:
+        imagePullPolicy: Always
+        image: ubuntu:20.04 # TODO create out own image with tools installed
+        command: [sh, -c]
+        args: ["ls -rtl "]
+              # &&
+              # echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections &&
+              # env DEBIAN_FRONTEND=noninteractive  &&
+              # apt-get update && apt-get -y install python3 cmake g++ curl git &&
+              #  curl -sL https://deb.nodesource.com/setup_16.x | bash - && 
+              #  apt-get -y install nodejs &&
+              #  npm install --global yarn && 
+              #  yarn add @backstage/cli -W &&
+              #  yarn test"]
+        workingDir: /work/source/{{inputs.parameters.path}}
+        volumeMounts:
+          - name: work
+            mountPath: /work
+
+    - name: lint
+      inputs:
+        parameters:
+          - name: path
+            value: "{{workflow.parameters.path}}"
+      script:
+        imagePullPolicy: Always
+        image: ubuntu:20.04 # TODO create out own image with tools installed
+        command: [sh, -c]
+        args: ["ls -rtl "]
+              # echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections &&
+              # env DEBIAN_FRONTEND=noninteractive  &&
+              # apt-get update && apt-get -y install python3 cmake g++ curl git &&
+              #  curl -sL https://deb.nodesource.com/setup_16.x | bash - && 
+              #  apt-get -y install nodejs &&
+              #  npm install --global yarn && 
+              #  yarn add @backstage/cli -W &&
+              #  yarn lint"]
+        workingDir: /work/source/{{inputs.parameters.path}}
+        volumeMounts:
+          - name: work
+            mountPath: /work
+
+
+    - name: code-analysis
+      inputs:
+        parameters:
+          - name: path
+            value: "{{workflow.parameters.path}}"
+          - name: sonarqube_url
+            value: "{{workflow.parameters.sonarqube_url}}"
+          - name: sonarqube_project_key
+            value: "{{workflow.parameters.sonarqube_project_key}}"
+      script:
+        imagePullPolicy: Always
+        image: sonarsource/sonar-scanner-cli:4.6
+        command: [sh, -c]
+        args: [
+            " sonar-scanner \
+            -Dsonar.projectKey={{inputs.parameters.sonarqube_project_key}} \
+            -Dsonar.sources=. \
+            -Dsonar.host.url={{inputs.parameters.sonarqube_url}} \
+            -Dsonar.login=$SONARQUBE_API_TOKEN \
+            -Dsonar.qualitygate.wait=false",
+          ]
+        workingDir: "/work/source/{{inputs.parameters.path}}"
+        volumeMounts:
+          - name: work
+            mountPath: /work
+        env:
+          - name: SONARQUBE_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: sonarqube-api-token
+                key: api-token
+
+    - name: git-semantic-version
+      inputs:
+        parameters:
+          - name: path
+            value: "{{workflow.parameters.path}}"
+      outputs:
+        parameters:
+        - name: version
+          valueFrom:
+            path:  /tmp/version.txt
+          globalName: imageVersion
+        - name: name
+          valueFrom:
+            path:  /tmp/name.txt
+          globalName: imageName
+      script:
+        imagePullPolicy: Always
+        image: ubuntu:20.04
+        command: [sh, -c]
+        args: [
+            "
+            echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections &&
+            env DEBIAN_FRONTEND=noninteractive  &&
+            apt-get update && apt-get -y install curl git tzdata jq &&
+            curl -sL https://deb.nodesource.com/setup_16.x | bash - && 
+            apt-get -y install nodejs &&
+            mkdir -p ~/.ssh/ &&
+            ls -rtl &&
+            cp /secret/mountpath/github-ssh ~/.ssh/id_rsa &&
+            chmod 600 ~/.ssh/id_rsa &&
+            ssh-keyscan github.com >> ~/.ssh/known_hosts &&
+            echo 'git permissions key done' &&
+            git config --global user.name 'argo-workflows' &&
+            git config --global user.email 'workflows@polarpoint.io' &&
+            npm install --save-dev semantic-release && 
+            npm run release &&
+            git push &&
+            jq -r '.version' package.json  > /tmp/version.txt &&
+            jq -r '.name' package.json  > /tmp/name.txt &&
+
+            echo 'semantic version complete for' &&
+            cat /tmp/name.txt &&
+            cat /tmp/version.txt
+            "]
+        workingDir: "/work/source"
+        volumeMounts:
+          - name: work
+            mountPath: /work
+          - name: github
+            mountPath: "/secret/mountpath"
+
+    - name: exit-handler
+      steps:
+        - - name: success
+            template: success
+            when: "{{workflow.status}} == Succeeded"
+          - name: failure
+            template: failure
+            when: "{{workflow.status}} != Succeeded"
+    - name: success
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args: ["echo hooray!"]
+    - name: failure
+      container:
+        image: alpine:latest
+        command: [sh, -c]
+        args: ["echo boohoo!"]
+    - name: approve
+      suspend: {}
