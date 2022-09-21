@@ -145,7 +145,7 @@ spec:
               revision: "{{inputs.parameters.branch}}"
               sshPrivateKeySecret:
                 name: github-ssh-access
-                key: github-ssh-access-private-key
+                key: privateKey
       container:
         imagePullPolicy: Always
         image: alpine/git:v2.32.0
