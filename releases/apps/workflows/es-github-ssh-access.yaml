@@ -17,6 +17,8 @@ spec:
           {{ .username | toString }}
         privateKey: >-
           {{ .privateKey | toString  }}
+        password: >-
+          {{ printf "{{ .password | toString }}" }}
   data:
     - secretKey: username
       remoteRef:
@@ -26,3 +28,7 @@ spec:
       remoteRef:
         key: github-credentials
         property: github-ssh-access-private-key
+    - secretKey: password
+      remoteRef:
+        key: github-credentials
+        property: github-personal-access-token

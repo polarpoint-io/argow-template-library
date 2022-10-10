@@ -15,7 +15,7 @@ spec:
       data:
         username: >- 
           {{ printf "{{ .username | toString }}" }}
-        privateKey: >-
+        password: >-
           {{ printf "{{ .password | toString }}" }}
   data:
     - secretKey: username

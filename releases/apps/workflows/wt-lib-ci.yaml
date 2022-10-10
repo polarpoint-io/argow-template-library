@@ -22,7 +22,7 @@ spec:
       - name: imageLine
         value: polarpoint
       - name: sonarqube_url
-        value: https://code-analysis.polarpoint.io
+        value: sonarqube-non-prod-sonarqube.ci:9000
       - name: sonarqube_project_key
         value: backstage 
   entrypoint: main

@@ -46,10 +46,10 @@ spec:
           repo:  "{{inputs.parameters.HELM_CHART_REPO}}"
           revision:  "{{inputs.parameters.HELM_CHART_REVISION}}"
           usernameSecret:
-            name: git-gitlab-access
+            name: git-github-access
             key: username
           passwordSecret:
-            name: git-gitlab-access
+            name: git-github-access
             key: password
     container:
       image: alpine/git
