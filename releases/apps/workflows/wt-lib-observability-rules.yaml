@@ -1,0 +1,873 @@
+# A workflow to execute jsonnet, format, lint and test before pushing to helm chart directory.  
+# As part of the CD, produced helm chart wll be applied by ArgoCD 
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: observability-argo-workflow
+spec:
+  serviceAccountName: argo-workflow
+  # entrypoint is the name of the template used as the starting point of the workflow
+  entrypoint: monitoring-entrypoint
+  onExit: exit-handler  # invoke exit-handler template at end of the workflow
+  volumes:
+  - name: github
+    secret:
+      secretName: github-ssh-access
+  imagePullSecrets:
+  - name: docker-registry-credentials
+  arguments:
+    parameters:
+    - name: JSONNET_REPO
+      value: git@github.com:polarpoint-io/observability-jsonnets.git
+    - name: JSONNET_REVISION
+      value: main
+    - name: PROMETHEUS_HELM_CHART_REPO
+      value: git@github.com:polarpoint-io/prometheus-rules-helm.git
+    - name: PROMETHEUS_HELM_CHART_REVISION
+      value: main
+    - name: ARGOCD_APP_REPO
+      value: git@github.com:polarpoint-io/argocd-observability-instrumentation.git
+    - name: ARGOCD_APP_REVISION
+      value: master
+    - name: ARGOCD_APP_PATH
+      value: releases/apps/rules
+    - name: ARGOCD_APP_YAML_PATH
+      value: chart.targetRevision
+    - name: ARGOCD_APP_VALUES_FILE
+      value: dev.yaml
+    - name: THANOS_HELM_CHART_REPO
+      value: git@github.com:polarpoint-io/thanos-ruler-alerts-helm.git
+    - name: THANOS_HELM_CHART_REVISION
+      value: main
+    - name: THANOS_ARGOCD_APP_REPO
+      value: git@github.com:polarpoint-io/argocd-observability-applications.git
+    - name: THANOS_ARGOCD_APP_REVISION
+      value: development
+    - name: THANOS_ARGOCD_APP_PATH
+      value: applications
+    - name: THANOS_ARGOCD_APP_YAML_PATH
+      value: applications.thanos-alerts.source.targetRevision
+  # a temporary volume, named workdir, will be used as a working directory
+  # for this workflow. This volume is passed around from step to step.
+  # destination directory for template yamls
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+  - metadata:
+      name: alerts
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+  - metadata:
+      name: rules
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+  - metadata:
+      name: argocd-rules
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+  - metadata:
+      name: argocd-alerts
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+
+  templates:
+  - name: monitoring-entrypoint
+    inputs:
+      parameters:
+      - name: JSONNET_REPO
+      - name: JSONNET_REVISION
+      - name: THANOS_ARGOCD_APP_REPO
+      - name: THANOS_ARGOCD_APP_REVISION
+      - name: THANOS_HELM_CHART_REPO
+      - name: THANOS_HELM_CHART_REVISION
+      - name: THANOS_ARGOCD_APP_PATH
+      - name: THANOS_ARGOCD_APP_YAML_PATH
+      - name: PROMETHEUS_HELM_CHART_REPO
+      - name: PROMETHEUS_HELM_CHART_REVISION
+      - name: ARGOCD_APP_REPO
+      - name: ARGOCD_APP_PATH
+      - name: ARGOCD_APP_VALUES_FILE
+      - name: ARGOCD_APP_YAML_PATH
+      - name: ARGOCD_APP_REVISION
+
+    dag:
+      tasks:
+      - name: initialise
+        template: initialise
+        arguments:
+          parameters:
+          - name: JSONNET_REPO
+            value: "{{inputs.parameters.JSONNET_REPO}}"
+          - name: JSONNET_REVISION
+            value: "{{inputs.parameters.JSONNET_REVISION}}"
+      - name: jsonnet-bundler
+        depends: "initialise"
+        template: jsonnet-bundler
+
+      - name: create-yaml-alerts
+        depends: "jsonnet-bundler"
+        template: create-yaml
+        arguments:
+          parameters:
+          - name: prometheus-resource
+            value: alerts
+      - name: create-yaml-rules
+        depends: "jsonnet-bundler"
+        template: create-yaml
+        arguments:
+          parameters:
+          - name: prometheus-resource
+            value: rules
+
+      - name: prepare-yaml-alerts
+        depends: "create-yaml-alerts"
+        template: prepare-yaml
+        arguments:
+          parameters:
+          - name: prometheus-resource
+            value: alerts
+      - name: prepare-yaml-rules
+        depends: "create-yaml-rules"
+        template: prepare-yaml
+        arguments:
+          parameters:
+          - name: prometheus-resource
+            value: rules
+      - name: thanos-alerts
+        depends: "prepare-yaml-alerts"
+        template: thanos-alerts
+        arguments:
+          parameters:
+          - name: THANOS_HELM_CHART_REPO
+            value: "{{inputs.parameters.THANOS_HELM_CHART_REPO}}"
+          - name: THANOS_HELM_CHART_REVISION
+            value: "{{inputs.parameters.THANOS_HELM_CHART_REVISION}}"
+      - name: prometheus-rules
+        depends: "prepare-yaml-rules"
+        template: prometheus-rules
+        arguments:
+          parameters:
+          - name: PROMETHEUS_HELM_CHART_REPO
+            value: "{{inputs.parameters.PROMETHEUS_HELM_CHART_REPO}}"
+          - name: PROMETHEUS_HELM_CHART_REVISION
+            value: "{{inputs.parameters.PROMETHEUS_HELM_CHART_REVISION}}"
+
+      - name: check-alerts-yaml
+        depends: "thanos-alerts"
+        template: check-alerts-yaml
+      - name: check-rules-yaml
+        depends: "prometheus-rules"
+        template: check-rules-yaml
+      - name: semantic-version-alerts
+        depends: "check-alerts-yaml"
+        template: semantic-version-alerts
+      - name: semantic-version-rules
+        depends: "check-rules-yaml"
+        template: semantic-version-rules
+      - name: git-push-alerts
+        depends: "semantic-version-alerts"
+        template: git-push-alerts
+      - name: git-push-rules
+        depends: "semantic-version-rules"
+        template: git-push-rules
+      - name: helm-init-rules
+        depends: "git-push-rules"
+        template: helm-init-rules
+      - name: helm-init-alerts
+        depends: "git-push-alerts"
+        template: helm-init-alerts
+      - name: helm-lint-rules
+        depends: "helm-init-rules"
+        template: helm-lint-rules
+      - name: helm-lint-alerts
+        depends: "helm-init-alerts"
+        template: helm-lint-alerts
+      - name: helm-package-rules
+        depends: "helm-lint-rules"
+        template: helm-package-rules
+      - name: helm-package-alerts
+        depends: "helm-lint-alerts"
+        template: helm-package-alerts
+      - name: helm-publish-rules
+        depends: "helm-package-rules"
+        template: helm-publish-rules
+      - name: helm-publish-alerts
+        depends: "helm-package-alerts"
+        template: helm-publish-alerts
+      - name: helm-argocd-rules-synchronise
+        template: helm-argocd-rules-synchronise
+        depends: "helm-publish-rules"
+        arguments:
+          parameters:
+          - name: HELM_VERSION
+            value: "{{tasks.semantic-version-rules.outputs.parameters.helm_version}}"
+          - name: ARGOCD_APP_REPO
+            value: "{{inputs.parameters.ARGOCD_APP_REPO}}"
+          - name: ARGOCD_APP_REVISION
+            value: "{{inputs.parameters.ARGOCD_APP_REVISION}}"
+          - name: ARGOCD_APP_PATH
+            value: "{{inputs.parameters.ARGOCD_APP_PATH}}"
+          - name: ARGOCD_APP_YAML_PATH
+            value: "{{inputs.parameters.ARGOCD_APP_YAML_PATH}}"
+          - name: ARGOCD_APP_VALUES_FILE
+            value: "{{inputs.parameters.ARGOCD_APP_VALUES_FILE}}"
+      - name: helm-argocd-rules-commit
+        template: helm-argocd-rules-commit
+        depends: "helm-argocd-rules-synchronise"
+        arguments:
+          parameters:
+          - name: HELM_VERSION
+            value: "{{tasks.semantic-version-rules.outputs.parameters.helm_version}}"
+          - name: ARGOCD_APP_REPO
+            value: "{{inputs.parameters.ARGOCD_APP_REPO}}"
+          - name: ARGOCD_APP_REVISION
+            value: "{{inputs.parameters.ARGOCD_APP_REVISION}}"
+          - name: ARGOCD_APP_PATH
+            value: "{{inputs.parameters.ARGOCD_APP_PATH}}"
+          - name: ARGOCD_APP_VALUES_FILE
+            value: "{{inputs.parameters.ARGOCD_APP_VALUES_FILE}}"
+      - name: helm-argocd-alerts-synchronise
+        template: helm-argocd-alerts-synchronise
+        depends: "helm-publish-alerts"
+        arguments:
+          parameters:
+          - name: HELM_VERSION
+            value: "{{tasks.semantic-version-alerts.outputs.parameters.helm_version}}"
+          - name: THANOS_ARGOCD_APP_REPO
+            value: "{{inputs.parameters.THANOS_ARGOCD_APP_REPO}}"
+          - name: THANOS_ARGOCD_APP_REVISION
+            value: "{{inputs.parameters.THANOS_ARGOCD_APP_REVISION}}"
+          - name: THANOS_ARGOCD_APP_PATH
+            value: "{{inputs.parameters.THANOS_ARGOCD_APP_PATH}}"
+          - name: THANOS_ARGOCD_APP_YAML_PATH
+            value: "{{inputs.parameters.THANOS_ARGOCD_APP_YAML_PATH}}"
+      - name: helm-argocd-alerts-commit
+        template: helm-argocd-alerts-commit
+        depends: "helm-argocd-alerts-synchronise"
+        arguments:
+          parameters:
+          - name: HELM_VERSION
+            value: "{{tasks.semantic-version-alerts.outputs.parameters.helm_version}}"
+          - name: ARGOCD_APP_REPO
+            value: "{{inputs.parameters.ARGOCD_APP_REPO}}"
+          - name: ARGOCD_APP_REVISION
+            value: "{{inputs.parameters.ARGOCD_APP_REVISION}}"
+          - name: THANOS_ARGOCD_APP_PATH
+            value: "{{inputs.parameters.THANOS_ARGOCD_APP_PATH}}"
+          - name: THANOS_ARGOCD_APP_REVISION
+            value: "{{inputs.parameters.THANOS_ARGOCD_APP_REVISION}}"
+            
+
+
+  - name: initialise
+    inputs:
+      parameters:
+      - name: JSONNET_REPO
+      - name: JSONNET_REVISION
+      artifacts:
+      - name: source
+        path: /workspace/src
+        git:
+          repo: "{{inputs.parameters.JSONNET_REPO}}"
+          revision: "{{inputs.parameters.JSONNET_REVISION}}"
+          usernameSecret:
+            name: github-ssh-access
+            key: username
+          sshPrivateKeySecret:
+            name: github-ssh-access
+            key: privateKey
+    container:
+      image: bitnami/jsonnet:latest
+      command: [sh, -c]
+      args: ["cd /workspace/src &&
+        find . -name 'vendor' -prune -o -name '*.libsonnet' -print -o -name '*.jsonnet' -print | xargs -n 1 -- jsonnetfmt -i &&
+        echo 'linted jsonnet'
+        "]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+  - name: jsonnet-bundler
+    container:
+      image: polarpoint/jb:0.2.0 
+      command: [sh, -c]
+      args: ["tree &&
+              cd /workspace/src &&
+              jb install "]
+      workingDir: /src 
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: create-yaml
+    inputs:
+      parameters:
+      - name: prometheus-resource   
+    container:
+      image: polarpoint/jb:0.2.0
+      command: [sh, -c]
+      args: ["cd /workspace/src &&
+              TEMPLATE_TYPE={{inputs.parameters.prometheus-resource}}
+              sh /workspace/src/scripts/generate_rules.sh &&
+              tree"]
+      workingDir: /src 
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: check-alerts-yaml
+    container:
+      image: prom/prometheus:v2.26.0
+      command: [sh, -c]
+      args: ["cd /workspace/src &&
+              promtool check rules alerts/__generated/*.yaml"]
+      workingDir: /src 
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+  - name: check-rules-yaml
+    container:
+      image: prom/prometheus:v2.26.0
+      command: [sh, -c]
+      args: ["cd /workspace/src &&
+              promtool check rules rules/__generated/*.yaml"]
+      workingDir: /src 
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: prepare-yaml
+    inputs:
+      parameters:
+      - name: prometheus-resource
+    container:
+      image: python:alpine3.8
+      command: [sh, -c]
+      args: ["cd /workspace/src &&
+              pip install -r /workspace/src/scripts/requirements.txt && 
+              python /workspace/src/scripts/process_alerts.py {{inputs.parameters.prometheus-resource}}"]
+      workingDir: /src       
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+  - name: thanos-alerts
+    inputs:
+      parameters:
+      - name: THANOS_HELM_CHART_REPO
+      - name: THANOS_HELM_CHART_REVISION
+      artifacts:
+      - name: source
+        path: /alerts/src
+        git:
+          repo: "{{inputs.parameters.THANOS_HELM_CHART_REPO}}"
+          revision: "{{inputs.parameters.THANOS_HELM_CHART_REVISION}}"
+          usernameSecret:
+            name: github-ssh-access
+            key: username
+          sshPrivateKeySecret:
+            name: github-ssh-access
+            key: privateKey  
+    container:
+      image: polarpoint/jb:0.2.0
+      command: [sh, -c]
+      args: ["cd /workspace/src/chart/files/alerts &&
+            ls -rtl  &&
+            tree /alerts && 
+            mkdir -p /alerts/src/chart/files/alerts &&
+            mkdir -p /alerts/src/chart/templates/ &&            
+            cp -rf * /alerts/src/chart/files/alerts &&
+           echo 'copied alerts'
+      "]
+      workingDir: /src       
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+      - name: alerts
+        mountPath: /alerts
+  - name: prometheus-rules
+    inputs:
+      parameters:
+      - name: PROMETHEUS_HELM_CHART_REPO
+      - name: PROMETHEUS_HELM_CHART_REVISION
+      artifacts:
+      - name: source
+        path: /rules/src
+        git:
+          repo: "{{inputs.parameters.PROMETHEUS_HELM_CHART_REPO}}"
+          revision: "{{inputs.parameters.PROMETHEUS_HELM_CHART_REVISION}}"
+          usernameSecret:
+            name: github-ssh-access
+            key: username
+          sshPrivateKeySecret:
+            name: github-ssh-access
+            key: privateKey  
+    container:
+      image: polarpoint/jb:0.2.0
+      command: [sh, -c]
+      args: ["cd /workspace/src/chart/files/rules &&
+            ls -rtl  &&
+            tree /rules && 
+            mkdir -p /rules/src/chart/files/rules &&
+            rm -rf /rules/src/chart/files/rules/* && 
+            mkdir -p /rules/src/chart/templates/ &&
+            cp -rf * /rules/src/chart/files/rules &&
+           echo 'copied rules'
+      "]
+      workingDir: /src       
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+      - name: rules
+        mountPath: /rules
+  - name: semantic-version-alerts
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /alerts/src &&
+              helm plugin list && 
+              helm release chart --source helm --bump minor --print-computed-version > /tmp/helm_version.txt &&
+              helm release chart --source helm --bump minor"]
+      workingDir: /src       
+      volumeMounts:
+      - name: alerts
+        mountPath: /alerts
+    outputs:
+      parameters:
+      - name: helm_version
+        valueFrom:
+          path: /tmp/helm_version.txt
+
+  - name: semantic-version-rules
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always
+      command: [sh, -c]
+      args: ["cd /rules/src &&
+              ls -rtl chart &&
+              helm plugin list &&
+              helm release chart --source helm --bump minor --print-computed-version > /tmp/helm_version.txt &&
+              helm release chart --source helm --bump minor"]
+      workingDir: /src
+      volumeMounts:
+      - name: rules
+        mountPath: /rules
+    outputs:
+      parameters:
+      - name: helm_version
+        valueFrom:
+          path: /tmp/helm_version.txt
+
+  - name: helm-semantic-version
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /target/dist/chart &&
+              ls -rtl &&
+              helm plugin list && 
+              helm release . --source helm --bump minor --print-computed-version > /tmp/helm_version.txt &&
+              helm release . --source helm --bump minor &&
+              cat Chart.yaml"]
+      workingDir: /dist       
+      volumeMounts:
+      - name: target
+        mountPath: /target
+    outputs:
+      parameters:
+      - name: helm_version
+        valueFrom:
+          path: /tmp/helm_version.txt
+        
+  - name: git-push-alerts
+    container:
+      image: alpine/git
+      command: [sh, -c]
+      args: ["
+        mkdir -p ~/.ssh/ &&  
+        cd /alerts/src &&
+        ls -rtl &&  
+        cp /secret/mountpath/privateKey ~/.ssh/id_rsa &&
+         chmod 600 ~/.ssh/id_rsa &&
+         ssh-keyscan github.com >> ~/.ssh/known_hosts &&
+         echo 'git permissions key done' &&
+            git config --global user.name 'argo-workflows' &&       
+            git config --global user.email $GIT_AUTHOR_EMAIL && 
+            git pull &&
+            git status &&
+            git add /alerts/src/* &&         
+            git commit -m 'feat: argo workflows' &&             
+            git push  &&
+        echo 'git push done'               
+      "]
+      env:
+      - name: GIT_AUTHOR_EMAIL
+        valueFrom:
+          secretKeyRef:
+            name: github-credentials
+            key: username
+      volumeMounts:
+      - name: alerts
+        mountPath: /alerts
+      - name: github
+        mountPath: "/secret/mountpath" 
+
+  - name: git-push-rules
+    container:
+      image: alpine/git
+      command: [sh, -c]
+      args: ["
+        mkdir -p ~/.ssh/ &&  
+        cd /rules/src &&
+        ls -rtl &&  
+        cp /secret/mountpath/privateKey ~/.ssh/id_rsa &&
+        echo  >> ~/.ssh/id_rsa &&
+         chmod 600 ~/.ssh/id_rsa &&
+         ssh-keyscan github.com >> ~/.ssh/known_hosts &&
+         echo 'git permissions key done' &&  
+            git config --global user.name 'argo-workflows' &&       
+            git config --global user.email $GIT_AUTHOR_EMAIL && 
+            git pull &&
+            git status &&
+            git add /rules/src/* &&         
+            git commit -m 'feat: argo workflows' &&             
+            git push  &&
+        echo 'git push done'               
+      "]
+      env:
+      - name: GIT_AUTHOR_EMAIL
+        valueFrom:
+          secretKeyRef:
+            name: github-ssh-access
+            key: username
+      - name: PRIVATEKEY
+        valueFrom:
+          secretKeyRef:
+            name: github-ssh-access
+            key: privateKey       
+      volumeMounts:
+      - name: rules
+        mountPath: /rules
+      - name: github
+        mountPath: "/secret/mountpath" 
+
+  - name: helm-init-rules
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /rules/src &&
+              helm repo index chart "]
+      workingDir: /src       
+      volumeMounts:
+      - name: rules
+        mountPath: /rules
+
+  - name: helm-lint-rules
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /rules/src &&
+              helm lint chart "]
+      workingDir: /src       
+      volumeMounts:
+      - name: rules
+        mountPath: /rules        
+
+  - name: helm-package-rules
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /rules/src &&
+              helm package chart "]
+      workingDir: /src       
+      volumeMounts:
+      - name: rules
+        mountPath: /rules 
+
+  - name: helm-publish-rules
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /rules/src &&
+                helm repo add --username=$CHART_USER --password=$CHART_PASSWORD harbor https://registry.bel2.corp-apps.com/chart &&
+                helm cm-push --username=$CHART_USER --password=$CHART_PASSWORD *.tgz harbor "]
+      workingDir: /src       
+      volumeMounts:
+      - name: rules
+        mountPath: /rules 
+      env:
+      - name: CHART_USER
+        valueFrom:
+          secretKeyRef:
+            name: harbor-chart-robot
+            key: username
+      - name: CHART_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: harbor-chart-robot
+            key: password
+
+  - name: helm-init-alerts
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /alerts/src &&
+              helm repo index chart "]
+      workingDir: /src       
+      volumeMounts:
+      - name: alerts
+        mountPath: /alerts
+
+  - name: helm-lint-alerts
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /alerts/src &&
+              helm lint chart "]
+      workingDir: /src       
+      volumeMounts:
+      - name: alerts
+        mountPath: /alerts        
+
+  - name: helm-package-alerts
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /alerts/src &&
+              helm package chart "]
+      workingDir: /src       
+      volumeMounts:
+      - name: alerts
+        mountPath: /alerts 
+
+  - name: helm-publish-alerts
+    script:
+      image: polarpoint/helm-client:3.8.2
+      imagePullPolicy: Always 
+      command: [sh, -c]
+      args: ["cd /alerts/src &&
+                helm repo add --username=$CHART_USER --password=$CHART_PASSWORD harbor https://registry.bel2.corp-apps.com/chart &&
+                helm cm-push --username=$CHART_USER --password=$CHART_PASSWORD *.tgz harbor "]
+      workingDir: /src       
+      volumeMounts:
+      - name: alerts
+        mountPath: /alerts 
+      env:
+      - name: CHART_USER
+        valueFrom:
+          secretKeyRef:
+            name: harbor-chart-robot
+            key: username
+      - name: CHART_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: harbor-chart-robot
+            key: password
+  - name: helm-argocd-rules-synchronise
+    inputs:
+      parameters:
+      - name: ARGOCD_APP_REPO
+      - name: ARGOCD_APP_REVISION
+      - name: ARGOCD_APP_PATH
+      - name: ARGOCD_APP_YAML_PATH
+      - name: ARGOCD_APP_VALUES_FILE
+      - name: HELM_VERSION
+      artifacts:
+      - name: argocd-rules
+        path: /argocd/applications
+        git:
+          repo: "{{ inputs.parameters.ARGOCD_APP_REPO }}"
+          revision: "{{ inputs.parameters.ARGOCD_APP_REVISION }}"
+          usernameSecret:
+            name: github-credentials
+            key: username
+
+          sshPrivateKeySecret:
+            name: github-ssh-access
+            key: privateKey
+    container:
+      image: polarpoint/yq:3.4.1
+      imagePullPolicy: Always
+      command: [sh, -c]
+      args: ["
+              cd /argocd/applications/{{ inputs.parameters.ARGOCD_APP_PATH}} &&
+              tree . && 
+              cat {{ inputs.parameters.ARGOCD_APP_VALUES_FILE }} &&
+              yq write -i {{ inputs.parameters.ARGOCD_APP_VALUES_FILE }} {{inputs.parameters.ARGOCD_APP_YAML_PATH}} {{inputs.parameters.HELM_VERSION}} &&
+              cat {{ inputs.parameters.ARGOCD_APP_VALUES_FILE }}
+              "]
+      volumeMounts:
+      - name: argocd-rules
+        mountPath: /argocd
+  - name: helm-argocd-rules-commit
+    inputs:
+      parameters:
+      - name: ARGOCD_APP_REPO
+      - name: ARGOCD_APP_REVISION
+      - name: ARGOCD_APP_PATH
+      - name: HELM_VERSION
+      - name: ARGOCD_APP_VALUES_FILE
+    container:
+      image: alpine/git
+      command: [sh, -c]
+      args: ["
+        mkdir -p ~/.ssh/ &&  
+        cd /argocd/applications/{{ inputs.parameters.ARGOCD_APP_PATH}} &&
+        ls -rtl &&  
+        cp /secret/mountpath/privateKey ~/.ssh/id_rsa &&                 
+         chmod 600 ~/.ssh/id_rsa &&
+         ssh-keyscan github.com >> ~/.ssh/known_hosts &&
+         echo 'git permissions key done' &&  
+            git config --global user.name 'argo-workflows' &&       
+            git config --global user.email $GIT_AUTHOR_EMAIL && 
+            git status &&         
+            git add {{ inputs.parameters.ARGOCD_APP_VALUES_FILE }} &&
+            git commit -m 'feat: {{ inputs.parameters.HELM_VERSION}} argo workflows' &&             
+            git push origin {{ inputs.parameters.ARGOCD_APP_REVISION}} --follow-tags  &&
+        echo 'git push done'
+      "]
+      env:
+      - name: GIT_AUTHOR_EMAIL
+        valueFrom:
+          secretKeyRef:
+            name: github-ssh-access
+            key: username
+      - name: PRIVATEKEY
+        valueFrom:
+          secretKeyRef:
+            name: github-ssh-access
+            key: privateKey       
+      volumeMounts:
+      - name: github
+        mountPath: "/secret/mountpath" 
+      - name: argocd-rules
+        mountPath: /argocd
+
+  - name: helm-argocd-alerts-synchronise
+    inputs:
+      parameters:
+      - name: THANOS_ARGOCD_APP_REPO
+      - name: THANOS_ARGOCD_APP_REVISION
+      - name: THANOS_ARGOCD_APP_PATH
+      - name: THANOS_ARGOCD_APP_YAML_PATH
+      - name: HELM_VERSION
+      artifacts:
+      - name: argocd-alerts
+        path: /argocd/applications
+        git:
+          repo: git@github.com:polarpoint-io/devops-argocd-monitoring-applications.git # todo this should be using the parameter in the imputs
+          revision: "development" # as above
+          usernameSecret:
+            name: github-ssh-access
+            key: username
+          sshPrivateKeySecret:
+            name: github-ssh-access
+            key: privateKey
+    container:
+      image: polarpoint/yq:3.4.1
+      imagePullPolicy: Always
+      command: [sh, -c]
+      args: ["
+              cd /argocd/applications/{{ inputs.parameters.THANOS_ARGOCD_APP_PATH}} &&
+              tree . && 
+              yq write -i values.yaml {{inputs.parameters.THANOS_ARGOCD_APP_YAML_PATH }} {{inputs.parameters.HELM_VERSION}} &&
+              cat values.yaml 
+              "]
+      volumeMounts:
+      - name: argocd-alerts
+        mountPath: /argocd
+  - name: helm-argocd-alerts-commit
+    inputs:
+      parameters:
+      - name: ARGOCD_APP_REPO
+      - name: ARGOCD_APP_REVISION
+      - name: THANOS_ARGOCD_APP_PATH
+      - name: THANOS_ARGOCD_APP_REVISION
+      - name: HELM_VERSION  
+    container:
+      image: alpine/git
+      command: [sh, -c]
+      args: ["
+        mkdir -p ~/.ssh/ &&  
+        cd /argocd/applications/{{ inputs.parameters.THANOS_ARGOCD_APP_PATH}} &&
+        ls -rtl &&  
+        cp /secret/mountpath/privateKey ~/.ssh/id_rsa &&                 
+         chmod 600 ~/.ssh/id_rsa &&
+         ssh-keyscan github.com >> ~/.ssh/known_hosts &&
+         echo 'git permissions key done' &&  
+            git config --global user.name 'argo-workflows' &&       
+            git config --global user.email $GIT_AUTHOR_EMAIL && 
+            git status &&         
+            git add values.yaml &&       
+            git commit -m 'feat: {{ inputs.parameters.HELM_VERSION}} argo workflows' &&             
+            git push origin {{ inputs.parameters.THANOS_ARGOCD_APP_REVISION}} --follow-tags  &&
+        echo 'git push done'
+      "]
+      env:
+      - name: GIT_AUTHOR_EMAIL
+        valueFrom:
+          secretKeyRef:
+            name: github-credentials
+            key: username
+      volumeMounts:
+      - name: github
+        mountPath: "/secret/mountpath" 
+      - name: argocd-alerts
+        mountPath: /argocd
+
+  # Exit handler templates
+  # After the completion of the entrypoint template, the status of the
+  # workflow is made available in the global variable {{workflow.status}}.
+  # {{workflow.status}} will be one of: Succeeded, Failed, Error
+  - name: exit-handler
+    steps:
+    - - name: notify
+        template: send-notification
+      - name: success
+        template: success
+        when: "{{workflow.status}} == Succeeded"
+      - name: failure
+        template: failure
+        when: "{{workflow.status}} != Succeeded"
+  - name: send-notification
+    container:
+      image: alpine:latest
+      command: [sh, -c]
+      args: ["echo send e-mail: {{workflow.name}} {{workflow.status}}"]
+  - name: success
+    container:
+      image: alpine:latest
+      command: [sh, -c]
+      args: ["echo hooray!"]
+  - name: failure
+    container:
+      image: alpine:latest
+      command: [sh, -c]
+      args: ["echo Failed!!"] 
+  - name: approve
+    suspend: {} 
